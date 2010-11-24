@@ -1,0 +1,2 @@
+Everyting in this project is strictly licensed under the WTFPL license.
+For more information please visit http://en.wikipedia.org/wiki/WTFPL    
