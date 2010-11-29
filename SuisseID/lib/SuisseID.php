@@ -9,14 +9,14 @@ class SuisseID {
 	public  $personSuisseIDNo;
 	public  $statusText;	
 	private $userIsAuthenticated = false;
-	
+	public  $sessionID;
     	  		
 	function SuisseID($CONF)
 	{
 		$this->CONF = $CONF;	
 	}	
 	
-	public function processSamlResponse($friendlyNameIndex = false, $onlyValues = false, $redirectIfNotSet = true){
+	public function processSamlResponse($shortAttributeNames = false, $onlyValues = false, $redirectIfNotSet = true){
 			
 		try {	
 
@@ -27,70 +27,142 @@ class SuisseID {
 					header("Location: index.php");
 				}
 				return false;
-			}
+			}								
 			
 			$SAML = base64_decode ( $_POST ['SAMLResponse'] );		
 			$SAML = str_replace("\r\n", '', $SAML);
 			$SAML = str_replace('  ', '', $SAML);
-			
-			$xml2array 		 = new XMLToArrayParser($SAML);
-			$this->samlResponseArray = $xml2array->array;			
-			$this->userIsAuthenticated  = $this->setPersonAttributes($friendlyNameIndex, $onlyValues);	
-						
-			return $this->userIsAuthenticated ;		 			
+								
+			$xml2array 		 				= new XMLToArrayParser($SAML);
+			$this->samlResponseArray 		= $xml2array->convertedArray;							
+				
+			$this->userIsAuthenticated  	= $this->setPersonAttributes($shortAttributeNames, $onlyValues);				
+				
+			return $this->userIsAuthenticated;		 			
 		}
 		catch(Exception $ex)
-		{			
-			$this->writeLog($ex);		
+		{						 
+			$this->statusText = $this->writeLog($ex);		
 		}
 		return false;
 	}
 
-	private function setPersonAttributes($friendlyNameIndex = false, $onlyValues = true) {		
-					
+	private function setPersonAttributes($shortAttributeNames = false, $onlyValues = true) {		
+
+		//$this->printArray($this->samlResponseArray);
+		
+		if($this->CONF['addSessionIDToSAMLRequestURL'])
+		{
+			if(empty($_GET['SID1']))
+			{
+				throw new Exception("\$this->CONF['addSessionIDToSAMLRequestURL'] is true but SAML response has no Session-ID in URL -> \$_GET['SID1'] was empty");				
+			}
+			else
+			{
+				$this->sessionID = $_GET['SID1'];			
+			}
+		}		
+		
+		if(empty($this->sessionID ) && $this->CONF['useSessionIDasSAMLID'])
+		{
+			if(empty($this->samlResponseArray['saml2p:Response']['attrib']['InResponseTo']))
+			{
+				throw new Exception("\$this->CONF['useSessionIDasSAMLID'] is true, but no value in \$this->samlResponseArray['saml2p:Response']['attrib']['ID']");									
+			}
+			else
+			{
+				$this->sessionID = 	$this->samlResponseArray['saml2p:Response']['attrib']['InResponseTo'];							
+			}
+		}
+		else if($this->samlResponseArray['saml2p:Response']['attrib']['InResponseTo'] != md5($_SERVER['REMOTE_ADDR']))
+		{
+			throw new Exception("Wrong value in \$this->samlResponseArray['saml2p:Response']['attrib']['InResponseTo']");								
+		}
+				
+		if($this->CONF['addSessionIDToSAMLRequestURL'] && $this->CONF['useSessionIDasSAMLID'] && ($_GET['SID1'] != $this->samlResponseArray['saml2p:Response']['attrib']['ID']))
+		{
+			$txt = "\$_GET['SID1'] and \$this->samlResponseArray['saml2p:Response']['attrib']['ID'] have different values: ";
+			if(!empty($_GET['SID1'])){ $txt .= $_GET['SID1']; };
+			$txt .= " and ";
+			if(!empty($this->samlResponseArray['saml2p:Response']['attrib']['ID'])){ $txt .= $this->samlResponseArray['saml2p:Response']['attrib']['ID']; };			
+			throw new Exception($txt);
+		}
+
+		if(($this->CONF['addSessionIDToSAMLRequestURL'] || $this->CONF['useSessionIDasSAMLID']) &&
+		    !empty($this->CONF['sessionIdentifier']) && 
+		    !empty($this->sessionID))
+		{
+			$_GET[$this->CONF['sessionIdentifier']] = $this->sessionID;			
+		}
+									
+		
 		//make some checks
 		if(!empty($this->samlResponseArray['saml2p:Response']['saml2p:Status']['saml2p:StatusCode']['saml2p:StatusCode']['attrib']['Value']))
 		{
-			$this->statusText = $this->samlResponseArray['saml2p:Response']['saml2p:Status']['saml2p:StatusCode']['saml2p:StatusCode']['attrib']['Value'];								                                         
-			return false;
-		}
+			throw new Exception($this->samlResponseArray['saml2p:Response']['saml2p:Status']['saml2p:StatusCode']['saml2p:StatusCode']['attrib']['Value']);								                                         
+		}	
 		
-		if(empty($this->samlResponseArray['saml2p:Response']['saml2:Assertion']['saml2:Subject']['saml2:NameID']['cdata']) || strlen($this->samlResponseArray['saml2p:Response']['saml2:Assertion']['saml2:Subject']['saml2:NameID']['cdata']) != 19)
-		{
-			$this->statusText = "SuisseID No. is wrong";					
-			return false;
+		if(empty($this->samlResponseArray['saml2p:Response']['saml2:Assertion']['saml2:Subject']['saml2:NameID']['cdata']) ||
+		   strlen($this->samlResponseArray['saml2p:Response']['saml2:Assertion']['saml2:Subject']['saml2:NameID']['cdata']) != 19)
+		{								
+			throw new Exception("SuisseID No. is wrong");								
 		}
 		 
-		if(empty($this->samlResponseArray['saml2p:Response']['saml2p:Status']['saml2p:StatusCode']['attrib']['Value']) || $this->samlResponseArray['saml2p:Response']['saml2p:Status']['saml2p:StatusCode']['attrib']['Value'] != 'urn:oasis:names:tc:SAML:2.0:status:Success')
+		if(empty($this->samlResponseArray['saml2p:Response']['saml2p:Status']['saml2p:StatusCode']['attrib']['Value']) ||
+		   $this->samlResponseArray['saml2p:Response']['saml2p:Status']['saml2p:StatusCode']['attrib']['Value'] != 'urn:oasis:names:tc:SAML:2.0:status:Success')
 		{
-			$this->statusText = "Wrong Response-Status";					
-			return false;
-		}
-		
-		if($this->samlResponseArray['saml2p:Response']['attrib']['InResponseTo'] != md5($_SERVER['REMOTE_ADDR']))
-		{
-			$this->statusText = "Wrong value in \$this->samlResponseArray['saml2p:Response']['attrib']['InResponseTo']";					
-			return false;
+			throw new Exception("Wrong Response-Status");								
 		}
 		
 		
+		if(empty($this->samlResponseArray['saml2p:Response']['attrib']['IssueInstant']) ||
+		   strlen($this->samlResponseArray['saml2p:Response']['attrib']['IssueInstant']) < 20 ||
+		   strlen($this->samlResponseArray['saml2p:Response']['attrib']['IssueInstant']) > 27
+		  )		  
+		{			
+			throw new Exception("\$this->samlResponseArray['saml2p:Response']['attrib']['IssueInstant'] has a wrong value");								
+		}
+		else
+		{
+			$samlTime = $this->samlResponseArray['saml2p:Response']['attrib']['IssueInstant'];					
+			$unixTime = gmmktime(substr($samlTime,11,2), substr($samlTime,14,2), substr($samlTime,17,2), substr($samlTime,5,2), substr($samlTime,8,2), substr($samlTime,0,4));
+			
+			if($unixTime < (time() - 300))
+			{
+				throw new Exception("SAML-Response is too old");
+			}
+			
+			if($unixTime > (time() + 300))
+			{
+				throw new Exception("SAML-Response has a wrong timestamp");
+			}
+			
+		}
+								
 		$this->personSuisseIDNo = $this->samlResponseArray['saml2p:Response']['saml2:Assertion']['saml2:Subject']['saml2:NameID']['cdata'];
-
+				
 		if(empty($this->samlResponseArray['saml2p:Response']['saml2:Assertion']['saml2:AttributeStatement']['saml2:Attribute']))
 		{		
 			return true;
-		}		
+		}						
 		
 		$attributes = $this->samlResponseArray['saml2p:Response']['saml2:Assertion']['saml2:AttributeStatement']['saml2:Attribute'];			
+		
+		//$this->printArray($attributes);		
+		
 		
 		foreach($attributes as $key => $value)
 		{
 			$indexKey = $value['attrib']['Name'];
 			
-			if($friendlyNameIndex)
+			if($shortAttributeNames)
 			{
-				$indexKey = $value['attrib']['FriendlyName'];
-			}
+				$tempKey = array_search($value['attrib']['Name'], $this->CONF['attributes']);
+				if($tempKey)
+				{
+					$indexKey = $tempKey;
+				}
+			}			
 			
 			$cdata = '';
 
@@ -150,7 +222,15 @@ class SuisseID {
 
 		$msg = '';
 		try {	
-			$msg = substr($ex->getMessage()." on <b>line ".$ex->getLine()."</b> in file ".$ex->getFile(), 0, 200);			
+			if(is_object($ex))
+			{
+				$msg = substr($ex->getMessage()." on <b>line ".$ex->getLine()."</b> in file ".$ex->getFile(), 0, 200);
+			}
+			else 
+			{
+				$msg = substr($ex, 0, 200);
+			}
+						
 			if($this->CONF['showErrors'])
 			{
 				echo $msg;
@@ -161,19 +241,16 @@ class SuisseID {
 		
 		try {
 			if(empty($this->CONF['logErrors']) || $this->CONF['logErrors'])
-			{						
-				if(substr($this->CONF['suisseid_error_log'],-1) != '/')
-				{
-					$this->CONF['suisseid_error_log'] .= '/';
-				}
-				
-				$filename = $this->CONF['suisseid_error_log'].'suisseid_error.log';
+			{										
+				$filename = $this->CONF['suisseid_error_log'];
 				$fp = fopen ( $filename, "a" );
 				$logs = gmdate("d.m.Y H:i:s") . " | $msg \n";
 				fputs ( $fp, utf8_decode ( $logs ) );
 				fclose ( $fp );
 			}			
-		} catch ( Exception $ex ) {}		
+		} catch ( Exception $ex ) {}
+
+		return $msg;
 	}
 
 	public function getSAML($isOnlyAuthentication = true, $selectedIdp, $requestAttributes = array(), $returnInBase64Encoding = true)
@@ -181,25 +258,34 @@ class SuisseID {
 		$selectedIdp = $this->checkSelectedIdp($selectedIdp);				
 		
 		$forceAuthn = 'true';
+		
+		$requestURL = $this->CONF['idp'][$selectedIdp]['samlEndpointQuery'];
 		if($isOnlyAuthentication)
 		{
 			$requestAttributes = array();
 			$forceAuthn = 'false';
+			$requestURL = $this->CONF['idp'][$selectedIdp]['samlEndpointSSO'];
 		}
 		else if(empty($requestAttributes) || count($requestAttributes) == 0)
 		{
 			$requestAttributes = $this->CONF['defaultRequest'];
 		}	
-
+		
 		$sessionID = '';
-		if(!empty($this->sessionID))
+		if(!empty($this->sessionID) && $this->CONF['addSessionIDToSAMLRequestURL'] && !empty($this->CONF['sessionIdentifier']))
 		{			
-			$sessionID = '?'.$this->sessionID;
+			$sessionID = '?SID1='.$this->sessionID;
 		} 
 				
-		$SAML = '<?xml version="1.0" encoding="UTF-8"?>
-				<AuthnRequest xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:ic="http://schemas.xmlsoap.org/ws/2005/05/identity" ID="'.md5($_SERVER['REMOTE_ADDR']).'" Version="2.0" IssueInstant="'.date("Y-m-d").'T'.date("H:i:s").'Z" Destination="'.$this->CONF['idp'][$selectedIdp]['samlEndpoint'].'" ForceAuthn="'.$forceAuthn.'" IsPassive="false" ProtocolBinding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST" AssertionConsumerServiceURL="'.$this->CONF['responseURL'].$sessionID.'" xmlns="urn:oasis:names:tc:SAML:2.0:protocol">
-					<Issuer xmlns="urn:oasis:names:tc:SAML:2.0:assertion" />
+		$samlID = md5($_SERVER['REMOTE_ADDR']);
+		if(!empty($this->sessionID) && $this->CONF['useSessionIDasSAMLID'])
+		{
+			$samlID = $this->sessionID;
+		}				
+				
+		$SAML = '<?xml version="1.0" encoding="utf-8"?>
+				<AuthnRequest xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:ic="http://schemas.xmlsoap.org/ws/2005/05/identity" ID="'.$samlID.'" Version="2.0" IssueInstant="'.gmdate("Y-m-d").'T'.gmdate("H:i:s").'Z" Destination="'.$requestURL.'" ForceAuthn="'.$forceAuthn.'" IsPassive="false" ProtocolBinding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST" AssertionConsumerServiceURL="'.$this->CONF['responseURL'].$sessionID.'" xmlns="urn:oasis:names:tc:SAML:2.0:protocol">					
+					<Issuer xmlns="urn:oasis:names:tc:SAML:2.0:assertion">'.$this->CONF['idp'][$selectedIdp]['issuer'].'</Issuer>
 					<Extensions>';
 					
 						foreach($requestAttributes as $key => $fieldName)
@@ -210,24 +296,17 @@ class SuisseID {
 		$SAML .= '		<ic:PrivacyNotice xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" Version="1" xsi:type="ic:PrivacyNoticeLocationType" xmlns:ic="http://schemas.xmlsoap.org/ws/2005/05/identity">'.$this->CONF['disclaimerURL'].'</ic:PrivacyNotice>
 					</Extensions>
 				</AuthnRequest>';
-						
-						
+											
 		$SAML = str_replace("\r\n", '', $SAML);
 		$SAML = str_replace("\t", '', $SAML);
-		$SAML = str_replace('  ', '', $SAML);
-		
+		$SAML = str_replace('  ', '', $SAML);		
+				
 		
 		if($returnInBase64Encoding)
 		{		
 			return base64_encode($SAML);
 		}
 		return $SAML;
-	}
-
-	public function printPersonAttributes($friendlyNameIndex = false, $onlyValue = true)
-	{		
-		$this->setPersonAttributes($friendlyNameIndex, $onlyValue);
-		$this->printArray($this->personAttributes);
 	}
 	
 	public function getLoginButton($isOnlyAuthentication = true, $includeFormsInMenu = true, $language = '', $sessionID = '', $confAttributeSet = '')
@@ -290,7 +369,16 @@ class SuisseID {
 	public function getSamlForm($isOnlyAuthentication = true, $selectedIdp = '', $menuButtons = true, $noFormButtons = false, $saml = '', $requestAttributes = array())
 	{	
 		$selectedIdp = $this->checkSelectedIdp($selectedIdp);		
-		$formAction  = $this->CONF['idp'][$selectedIdp]['samlEndpoint'].'?lang='.$this->getLanguage();
+		if($isOnlyAuthentication)
+		{
+			$formAction  = $this->CONF['idp'][$selectedIdp]['samlEndpointSSO'];
+		}
+		else 
+		{
+			$formAction  = $this->CONF['idp'][$selectedIdp]['samlEndpointQuery'];
+		}
+		
+		$formAction .= '?lang='.$this->getLanguage();;
 		 
 		if(empty($saml))
 		{

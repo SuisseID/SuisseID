@@ -1,7 +1,8 @@
 <?php 
 
 class XMLToArrayParser {
-  public  $array;
+  private  $array;
+  public  $convertedArray;
   private $parser;
   private $pointer;
   
@@ -18,6 +19,7 @@ class XMLToArrayParser {
     xml_set_element_handler($this->parser, "tag_open", "tag_close");
     xml_set_character_data_handler($this->parser, "cdata");
     xml_parse($this->parser, ltrim($xml));
+    $this->convertedArray = $this->convertArrayToStandardSchema();    
   }
 
   private function tag_open($parser, $tag, $attributes) {
@@ -60,6 +62,26 @@ class XMLToArrayParser {
             $this->pointer[$tag][0][$key] = $value;
     }}}else $idx = null;
     return $idx;
+  }
+
+  private function convertArrayToStandardSchema()
+  {	
+	return $this->getArray($this->array);	 	
+  }
+  
+  public function getArray($value, $key = '')
+  {    	  	  	 
+  	$newArray = array();
+	if (is_array ( $value )) {					 
+		foreach ( $value as $k => $v ) {										
+			if(!stristr($k, 'saml2')){ $k = str_ireplace('saml', 'saml2', $k);}
+			$newArray[$k] = $this->getArray($v, $k);								
+		}
+	} else if(!is_object($value)) {							
+		$newArray = $value;		
+	}
+	
+	return $newArray;
   }
 }
 

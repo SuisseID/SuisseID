@@ -1,0 +1,6 @@
+RewriteEngine on
+Options +FollowSymlinks
+RewriteBase /
+RewriteCond %{REQUEST_URI} !media/(.*)\.
+RewriteCond %{REQUEST_URI} !demo/(.*)\.
+RewriteRule ^(.+)\.*$ / [R,NC]
