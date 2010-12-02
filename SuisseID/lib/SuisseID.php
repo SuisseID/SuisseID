@@ -6,10 +6,11 @@ class SuisseID {
 	public  $samlResponseArray;
 	
 	public  $personAttributes;
-	public  $personSuisseIDNo;
-	public  $statusText;	
-	private $userIsAuthenticated = false;
-	public  $sessionID;
+	public  $personSuisseIDNo		= '';
+	public  $statusTex 				= '';	
+	private $userIsAuthenticated 	= false;
+	public  $userAuthenticationTime;
+	public  $sessionID				= '';
     	  		
 	function SuisseID($CONF)
 	{
@@ -19,7 +20,7 @@ class SuisseID {
 	public function processSamlResponse($shortAttributeNames = false, $onlyValues = false, $redirectIfNotSet = true){
 			
 		try {	
-
+						
 			if(empty($_POST ['SAMLResponse']))
 			{
 				if($redirectIfNotSet)
@@ -51,6 +52,8 @@ class SuisseID {
 
 		//$this->printArray($this->samlResponseArray);
 		
+		
+		//Do some checks on the SAML-Response STARTXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
 		if($this->CONF['addSessionIDToSAMLRequestURL'])
 		{
 			if(empty($_GET['SID1']))
@@ -135,9 +138,14 @@ class SuisseID {
 			if($unixTime > (time() + 300))
 			{
 				throw new Exception("SAML-Response has a wrong timestamp");
-			}
-			
+			}			
 		}
+		//END XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+		
+		
+		
+		
+		$this->userAuthenticationTime = time();
 								
 		$this->personSuisseIDNo = $this->samlResponseArray['saml2p:Response']['saml2:Assertion']['saml2:Subject']['saml2:NameID']['cdata'];
 				
@@ -235,21 +243,26 @@ class SuisseID {
 			{
 				echo $msg;
 			}
-		} catch ( Exception $ex ) {}
+		} catch ( Exception $ex2 )
+		{
+			$ex = $ex2;
+		}
 		
 		
-		
-		try {
-			if(empty($this->CONF['logErrors']) || $this->CONF['logErrors'])
-			{										
-				$filename = $this->CONF['suisseid_error_log'];
-				$fp = fopen ( $filename, "a" );
+		if(!empty($this->CONF['logErrors']) && $this->CONF['logErrors'] && !empty($this->CONF['suisseid_error_log']))
+		{	
+			try {													
+				$fp = fopen ( $this->CONF['suisseid_error_log'], "a" );
 				$logs = gmdate("d.m.Y H:i:s") . " | $msg \n";
 				fputs ( $fp, utf8_decode ( $logs ) );
 				fclose ( $fp );
-			}			
-		} catch ( Exception $ex ) {}
-
+			} catch ( Exception $ex ) {}
+		}
+		else
+		{
+			throw $ex;
+		}			
+		 
 		return $msg;
 	}
 
@@ -269,7 +282,7 @@ class SuisseID {
 		else if(empty($requestAttributes) || count($requestAttributes) == 0)
 		{
 			$requestAttributes = $this->CONF['defaultRequest'];
-		}	
+		}						
 		
 		$sessionID = '';
 		if(!empty($this->sessionID) && $this->CONF['addSessionIDToSAMLRequestURL'] && !empty($this->CONF['sessionIdentifier']))
@@ -288,15 +301,28 @@ class SuisseID {
 					<Issuer xmlns="urn:oasis:names:tc:SAML:2.0:assertion">'.$this->CONF['idp'][$selectedIdp]['issuer'].'</Issuer>
 					<Extensions>';
 					
-						foreach($requestAttributes as $key => $fieldName)
+						foreach($requestAttributes as $fieldName => $fieldType)
 						{
-							$SAML .= '<saml:Attribute Name="'.$fieldName.'" NameFormat="urn:oasis:names:tc:SAML:2.0:attrname-format:uri" eCH-0113:required="true" xmlns:eCH-0113="http://www.ech.ch/xmlns/eCH-0113/1" xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" />';
+							$required = 'true';
+							if($fieldType == 'optional')
+							{
+								$required = 'false';
+							}
+							else if($fieldType != 'required')
+							{
+								$this->writeLog(new Exception('Value of $requestAttributes['.$fieldName.'] can only be \'optional\' OR \'required\': '.$fieldType));
+							}														
+							
+							$SAML .= '<saml:Attribute Name="'.$this->CONF['attributes'][$fieldName].'" NameFormat="urn:oasis:names:tc:SAML:2.0:attrname-format:uri" eCH-0113:required="'.$required.'" xmlns:eCH-0113="http://www.ech.ch/xmlns/eCH-0113/1" xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" />';
 						}
 						
 		$SAML .= '		<ic:PrivacyNotice xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" Version="1" xsi:type="ic:PrivacyNoticeLocationType" xmlns:ic="http://schemas.xmlsoap.org/ws/2005/05/identity">'.$this->CONF['disclaimerURL'].'</ic:PrivacyNotice>
 					</Extensions>
 				</AuthnRequest>';
-											
+
+		
+		//echo $SAML;
+		
 		$SAML = str_replace("\r\n", '', $SAML);
 		$SAML = str_replace("\t", '', $SAML);
 		$SAML = str_replace('  ', '', $SAML);		
@@ -309,19 +335,23 @@ class SuisseID {
 		return $SAML;
 	}
 	
-	public function getLoginButton($isOnlyAuthentication = true, $includeFormsInMenu = true, $language = '', $sessionID = '', $confAttributeSet = '')
+	public function getLoginButton($isOnlyAuthentication = true, $includeFormsInMenu = true, $language = '', $sessionID = '', $confAttributeSetName = '', $attributeSetArray = array())
 	{		
 		if(!$includeFormsInMenu && empty($this->CONF['samlRedirectorURL']))
 		{
-			$this->writeLog(new Exception("\$CONF['samlRedirectorURL'] is empty and has to be defined in /conf/Config.php"));			
-			return;
+			return $this->writeLog(new Exception("\$CONF['samlRedirectorURL'] is empty and has to be defined in /conf/Config.php"));						
 		}				
-		
-		if(!$isOnlyAuthentication && !empty($confAttributeSet) && empty($this->CONF[$confAttributeSet]))
+				
+		if(!$isOnlyAuthentication && !empty($confAttributeSetName) && empty($this->CONF[$confAttributeSetName]) && count($attributeSetArray) > 0)
 		{
-			$this->writeLog(new Exception("Parameter '\$confAttributeSet' has a wrong value: ".$confAttributeSet));
-			return;
+			return $this->writeLog(new Exception("Parameter '\$confAttributeSetName' has a wrong value: ".$confAttributeSetName));			
 		}		
+		else if(count($attributeSetArray) == 0 && count($this->CONF[$confAttributeSetName]) > 0)
+		{
+			$attributeSetArray = $this->CONF[$confAttributeSetName];
+		}		
+		
+		//$this->printArray($attributeSetArray);
 		
 		$this->sessionID = $sessionID;
 		
@@ -330,9 +360,9 @@ class SuisseID {
 		{
 			$attr = '&attr=none';
 		}
-		else if(!empty($confAttributeSet))
+		else if(!empty($confAttributeSetName))
 		{
-			$attr = "&attr=".urlencode($confAttributeSet);
+			$attr = "&attr=".urlencode($confAttributeSetName);
 		}
 		
 		$button =	'<div class="menu" align="center"><ul><li><a id="current"></a><ul>';
@@ -343,7 +373,7 @@ class SuisseID {
 		{		
 			if($includeFormsInMenu)
 			{
-		 		$button .= '<li><a href="" target="_self"></a>'.$this->getSamlForm($isOnlyAuthentication, $selectedIdp).'</li>';
+		 		$button .= '<li><a href="" target="_self"></a>'.$this->getSamlForm($isOnlyAuthentication, $selectedIdp, $menuButtons = true, $noFormButtons = false, $saml = '', $attributeSetArray).'</li>';
 		 		//$button .= '<li>'.$this->getSamlForm($isOnlyAuthentication, $selectedIdp).'</li>';
 			}
 			else
@@ -406,11 +436,11 @@ class SuisseID {
 		return $form;
 	}
 	
-	public function getSamlRedirectorForms($isOnlyAuthentication = true, $selectedIdp = '', $confAttributeSet = '', $sessionID = '', $requestAttributes = array())
+	public function getSamlRedirectorForms($isOnlyAuthentication = true, $selectedIdp = '', $confAttributeSetName = '', $sessionID = '', $requestAttributes = array())
 	{
-		if(!empty($confAttributeSet))
+		if(!empty($confAttributeSetName))
 		{
-			$requestAttributes 		= $this->CONF[$confAttributeSet];
+			$requestAttributes 		= $this->CONF[$confAttributeSetName];
 			$isOnlyAuthentication 	= false;			
 		}
 		else if(!empty($_GET['attr']) && $_GET['attr'] == "none")
@@ -543,6 +573,26 @@ class SuisseID {
 		return $this->userIsAuthenticated();
 	}
 
+	public function userAuthenticationIsTimeout($userAuthNTime = 0)
+	{		
+		if(!empty($this->userAuthenticationTime) && empty($userAuthNTime))
+		{
+			$userAuthNTime = $this->userAuthenticationTime;
+		}
+		
+		if(!empty($userAuthNTime))
+		{
+			if($userAuthNTime + ($this->CONF['AuthenticationTimeout'] * 60) > time())
+			{
+				return false;
+			}
+		}
+		
+		$this->writeLog(new Exception("userAuthenticationIsTimeout is true"));
+		
+		return true;
+	}
+	
 	private function getLanguage($language = '')
 	{
 		if(!empty($language))
@@ -598,6 +648,16 @@ class SuisseID {
 		}
 		
 		return $gender;
+	}
+
+	public function getAttributeSetArray($attributeSetName = '')
+	{
+		if(!empty($this->CONF[$attributeSetName]) && count($this->CONF[$attributeSetName]) > 0)
+		{
+			return $this->CONF[$attributeSetName];
+		}
+		$this->writeLog(new Exception("The following \$attributeSetName was not found: $attributeSetName"));
+		return array();
 	}
 }
 
